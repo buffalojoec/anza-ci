@@ -1,0 +1,14 @@
+[package]
+name = "anza-program-ci"
+description = "Anza Program CI"
+version = "0.0.0"
+authors = ["Anza Technology Maintainers <maintainers@anza.xyz>"]
+repository = "https://github.com/solana-program/config"
+readme = "./README.md"
+license-file = "./LICENSE"
+edition = "2021"
+
+[dependencies]
+clap = { version = "4.5.32", features = ["derive"] }
+serde = { version = "1.0.219", features = ["derive"] }
+toml = { version = "0.8.20", features = ["parse"] }
