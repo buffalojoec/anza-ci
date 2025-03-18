@@ -6,6 +6,9 @@ use {
     std::{collections::HashMap, process::Command},
 };
 
+// `cargo` is the default command.
+const DEFAULT_COMMAND: &str = "cargo";
+
 #[derive(Clone, Debug, Default, PartialEq, Deserialize)]
 struct Args(Vec<String>);
 
@@ -14,6 +17,7 @@ struct Args(Vec<String>);
 struct Template {
     name: String,
     args: Option<Args>,
+    command: Option<String>,
     extra_args: Option<Args>,
     subcommand: Option<String>,
     toolchain: Option<String>,
@@ -30,6 +34,7 @@ impl TomlNamedElement for Template {
 struct Alias {
     name: String,
     args: Option<Args>,
+    command: Option<String>,
     extra_args: Option<Args>,
     manifest: Option<String>,
     subcommand: Option<String>,
@@ -59,11 +64,17 @@ impl Toml {
     pub fn compile_alias_command(&self, alias_name: &str) -> Option<Command> {
         let alias = self.aliases.get(alias_name)?;
 
-        let mut cmd = Command::new("cargo");
-
         match alias.template.as_ref().and_then(|t| self.templates.get(t)) {
             Some(template) => {
                 // Alias takes precedence over template.
+
+                let mut cmd = if let Some(command) = alias.command.as_ref() {
+                    Command::new(command)
+                } else if let Some(command) = template.command.as_ref() {
+                    Command::new(command)
+                } else {
+                    Command::new(DEFAULT_COMMAND)
+                };
 
                 if let Some(toolchain) = alias.toolchain.as_ref() {
                     cmd.arg(format!("+{}", toolchain));
@@ -94,8 +105,16 @@ impl Toml {
                 } else if let Some(extra_args) = template.extra_args.as_ref() {
                     cmd.args(&extra_args.0);
                 }
+
+                Some(cmd)
             }
             None => {
+                let mut cmd = if let Some(command) = alias.command.as_ref() {
+                    Command::new(command)
+                } else {
+                    Command::new(DEFAULT_COMMAND)
+                };
+
                 if let Some(toolchain) = alias.toolchain.as_ref() {
                     cmd.arg(format!("+{}", toolchain));
                 }
@@ -117,10 +136,10 @@ impl Toml {
                 if let Some(extra_args) = alias.extra_args.as_ref() {
                     cmd.args(&extra_args.0);
                 }
+
+                Some(cmd)
             }
         }
-
-        Some(cmd)
     }
 }
 
@@ -130,18 +149,25 @@ mod tests {
 
     const TEST_TOML: &str = r#"
         [[template]]
-        name = "format"
+        name = "format:rust"
+        command = "cargo"
         extra-args = ["--check"]
         subcommand = "fmt"
         toolchain = "nightly-2024-11-22"
 
         [[template]]
-        name = "lint"
+        name = "format:js"
+        command = "pnpm"
+        subcommand = "prettier"
+
+        [[template]]
+        name = "lint:rust"
         args = [
             "-Zunstable-options",
             "--all-features",
             "--all-targets",
         ]
+        command = "cargo"
         extra-args = [
             "--deny=warnings",
             "--deny=clippy::arithmetic_side_effects",
@@ -153,48 +179,68 @@ mod tests {
         [[alias]]
         name = "fmt-program"
         manifest = "program/Cargo.toml"
-        template = "format"
+        template = "format:rust"
+        
+        [[alias]]
+        name = "fmt-client-js"
+        manifest = "clients/js/package.json"
+        template = "format:js"
 
         [[alias]]
         name = "lint-program"
         manifest = "program/Cargo.toml"
-        template = "lint"
+        template = "lint:rust"
     "#;
 
     #[test]
     fn test_parse_toml() {
         let parsed_toml: Toml = toml::de::from_str(TEST_TOML).unwrap();
-        assert_eq!(parsed_toml.aliases.len(), 2);
-        assert_eq!(parsed_toml.templates.len(), 2);
+        assert_eq!(parsed_toml.aliases.len(), 3);
+        assert_eq!(parsed_toml.templates.len(), 3);
 
-        let format_template = &parsed_toml.templates.get("format").unwrap();
-        assert_eq!(format_template.name, "format");
-        assert_eq!(format_template.subcommand, Some("fmt".to_string()));
+        let format_rust_template = &parsed_toml.templates.get("format:rust").unwrap();
+        assert_eq!(format_rust_template.name, "format:rust");
+        assert_eq!(format_rust_template.args, None);
+        assert_eq!(format_rust_template.command, Some("cargo".to_string()));
         assert_eq!(
-            format_template.toolchain,
+            format_rust_template.extra_args,
+            Some(Args(vec!["--check".to_string()]))
+        );
+        assert_eq!(format_rust_template.subcommand, Some("fmt".to_string()));
+        assert_eq!(
+            format_rust_template.toolchain,
             Some("nightly-2024-11-22".to_string())
         );
 
-        let lint_template = &parsed_toml.templates.get("lint").unwrap();
-        assert_eq!(lint_template.name, "lint");
+        let format_js_template = &parsed_toml.templates.get("format:js").unwrap();
+        assert_eq!(format_js_template.name, "format:js");
+        assert_eq!(format_js_template.args, None);
+        assert_eq!(format_js_template.command, Some("pnpm".to_string()));
+        assert_eq!(format_js_template.extra_args, None);
+        assert_eq!(format_js_template.subcommand, Some("prettier".to_string()));
+        assert_eq!(format_js_template.toolchain, None);
+
+        let lint_rust_template = &parsed_toml.templates.get("lint:rust").unwrap();
+        assert_eq!(lint_rust_template.name, "lint:rust");
         assert_eq!(
-            lint_template.args,
+            lint_rust_template.args,
             Some(Args(vec![
                 "-Zunstable-options".to_string(),
                 "--all-features".to_string(),
                 "--all-targets".to_string(),
             ]))
         );
+        assert_eq!(lint_rust_template.command, Some("cargo".to_string()));
         assert_eq!(
-            lint_template.extra_args,
+            lint_rust_template.extra_args,
             Some(Args(vec![
                 "--deny=warnings".to_string(),
                 "--deny=clippy::arithmetic_side_effects".to_string(),
             ]))
         );
-        assert_eq!(lint_template.subcommand, Some("clippy".to_string()));
+        assert_eq!(lint_rust_template.subcommand, Some("clippy".to_string()));
         assert_eq!(
-            lint_template.toolchain,
+            lint_rust_template.toolchain,
             Some("nightly-2024-11-22".to_string())
         );
 
@@ -204,7 +250,21 @@ mod tests {
             format_program_alias.manifest,
             Some("program/Cargo.toml".to_string())
         );
-        assert_eq!(format_program_alias.template, Some("format".to_string()));
+        assert_eq!(
+            format_program_alias.template,
+            Some("format:rust".to_string())
+        );
+
+        let format_client_js_alias = &parsed_toml.aliases.get("fmt-client-js").unwrap();
+        assert_eq!(format_client_js_alias.name, "fmt-client-js");
+        assert_eq!(
+            format_client_js_alias.manifest,
+            Some("clients/js/package.json".to_string())
+        );
+        assert_eq!(
+            format_client_js_alias.template,
+            Some("format:js".to_string())
+        );
 
         let lint_program_alias = &parsed_toml.aliases.get("lint-program").unwrap();
         assert_eq!(lint_program_alias.name, "lint-program");
@@ -212,6 +272,6 @@ mod tests {
             lint_program_alias.manifest,
             Some("program/Cargo.toml".to_string())
         );
-        assert_eq!(lint_program_alias.template, Some("lint".to_string()));
+        assert_eq!(lint_program_alias.template, Some("lint:rust".to_string()));
     }
 }
